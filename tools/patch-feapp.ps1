@@ -126,11 +126,17 @@ try {
     # （社区对照：Comma0103/Linli-Nocturne 的 offline-feature 补丁 id 就叫
     #   `mailbox-entry`，改的是同一处 N3；AETAVK/linli-local-mail 则直接把
     #   `"hide-write":o(p)||!o(N3)` 替换成 `"hide-write":!1`。）
+    # 同一条语句里的 **Ss 是 MIDI 上传开关**（独立于 N3），全文 4 处：
+    #   `!o(w)&&o(Ss)?` → 曲库页顶部的上传卡片（id=tour-midi-upload）
+    #   `o(Ss)?`        → 「我的上传」空状态里的上传按钮
+    #   `o(Ss)?`        → CollectionView 的上传卡片
+    # 只开 N3 会出现「信能写、曲子传不了」，所以两个一起置真。
+    # （Nocturne 的 `musicGate` 补丁做的正是后半截：N3=!0,Ss=!1 → N3=!0,Ss=!0。）
     $a7 = 'N3=!1,Ss=!1,wa=({onComplete'
-    $r7 = 'N3=!0,Ss=!1,wa=({onComplete'
+    $r7 = 'N3=!0,Ss=!0,wa=({onComplete'
     if (([regex]::Matches($js, [regex]::Escape($a7))).Count -ne 1) { throw "anchor 7 not unique" }
     $js = $js.Replace($a7, $r7)
-    Write-Host "[patch 7] letter feature flag N3=!0 (write button no longer hidden)"
+    Write-Host "[patch 7] feature flags N3=!0 + Ss=!0 (write button + MIDI upload button)"
 
     # ── 补丁 8：把空的 tour 锚点改造成真正的侧边栏（主页 <-> 信箱 双向）──
     # App 模板里这两个 div 原本是给新手引导用的定位锚点，父容器是
@@ -154,11 +160,89 @@ try {
     if (([regex]::Matches($js, [regex]::Escape($a9a))).Count -ne 1) { throw "anchor 9a not unique" }
     $js = $js.Replace($a9a, 'disabled:!1')
 
-    # 「今天还可寄 N 封信」改成固定文案（\u 转义保持脚本纯 ASCII）
+    # 「今天还可寄 N 封信」改成不限（\u 转义保持脚本纯 ASCII）
     $a9b = 'v(o(s)("mailbox_write_mail_remaing",{count:a.remainingCount}))'
     if (([regex]::Matches($js, [regex]::Escape($a9b))).Count -ne 1) { throw "anchor 9b not unique" }
-    $js = $js.Replace($a9b, '"\u672c\u5730\u63a5\u5165 \u00b7 \u4e0d\u9650\u5c01\u6570"')
+    $js = $js.Replace($a9b, '"\u4eca\u5929\u8fd8\u53ef\u5bc4 \u221e \u5c01"')
     Write-Host "[patch 9] quota text replaced + write button never disabled"
+
+    # ── 补丁 10：加载离线曲库（游戏自带曲目的唯一数据源）────────────
+    # 自带曲目不走 HTTP。offlineCatalog store（`Yn`）的 load() 会调**原生桥**：
+    #     Xm() -> We({action:"getOfflineSongList", data:{}})
+    # 原生返回一段 JSON 字符串，再由 `y1()` 解析成 songs / musicStyles /
+    # performanceModes。但 load() 只在 `startOfflineSession()`（离线兜底登录）里
+    # 被调用 —— 我们的桥让 getUserInfo 成功返回，客户端走的是在线路径，
+    # 于是 offlineCatalog 永远是空的：曲库页不转圈、但也没有歌。
+    # （官方离线版之所以有歌，正是因为它连不上服务器 → 走离线兜底 → 原生把
+    #   曲目列表交给前端。）
+    #
+    # 这里挂在 handleToyLoginSuccess 的结尾补一次 load()。
+    # 顺带把结果上报到桥：原生桥的返回**不经 HTTP**，探针在 fetch/XHR 层看不到，
+    # 所以由这里直接报 songs/musicStyles 数量或失败原因。
+    # ⚠️ 这里必须是**表达式**：它夹在 `return s.isNewUser=G, ..., <这块>, z` 的
+    # 逗号表达式里，所以不能直接写 `try{...}catch(e){}` —— 那会抛
+    # `SyntaxError: Unexpected token 'try'`，整个 bundle 解析失败、Vue 应用不挂载，
+    # 表现是**黑屏且窗口无响应**（2026-10-07 就是这么翻的车）。
+    # 用 Promise.resolve().then(...) 包一层，try/catch 落进箭头函数体就合法了。
+    $a10 = 'Lt().liteStartPoll(),uo().startPolling())),z}'
+    $r10 = 'Lt().liteStartPoll(),uo().startPolling())),Promise.resolve().then(()=>{try{return Yn().load()}catch(x){}}).then(()=>{try{fetch("' + $base + '/olivia/catalog-loaded?n="+Yn().songs.length+"&styles="+Yn().musicStyles.length)}catch(x){}}).catch(e=>{try{fetch("' + $base + '/olivia/catalog-failed?e="+encodeURIComponent(String(e&&e.message||e)).slice(0,150))}catch(x){}}),z}'
+    if (([regex]::Matches($js, [regex]::Escape($a10))).Count -ne 1) { throw "anchor 10 not unique" }
+    $js = $js.Replace($a10, $r10)
+    Write-Host "[patch 10] offline catalog load hooked (native getOfflineSongList) + reported"
+
+    # ── 补丁 11：解除「每日定制 3 首」上限 ───────────────────────────
+    # midi store 里那个 3 是硬编码：`N=b(0),$=b(3)`（$ = midiDailyLimit，
+    # N = midiGeneratedToday）。消费点两处都是「剩余 = 上限 - 已用」：
+    #   MidiUploadCardLarge: h = max(0, midiDailyLimit - midiGeneratedToday)
+    #                        → 文案 `midi_daily_remaining`「今天还可定制 {remaining} 首」
+    #   MidiUploadDialog:    disabled: remaining <= 0
+    #                        → 文案 `midi_daily_limit_reached`「今日定制次数已用完」
+    # 所以把上限抬上去就同时解决两处。这个数字与桥无关（接口不返回它），
+    # 纯前端常量，官方按在线服务端规则设成 3。
+    $a11 = 'N=b(0),$=b(3);let L=null;'
+    $r11 = 'N=b(0),$=b(9999);let L=null;'
+    if (([regex]::Matches($js, [regex]::Escape($a11))).Count -ne 1) { throw "anchor 11 not unique" }
+    $js = $js.Replace($a11, $r11)
+
+    # 数字不显示成 9999，直接写成 ∞（这个消费点在全文唯一）
+    $a11b = 'v(o(c)("midi_daily_remaining",{remaining:o(h)}))'
+    if (([regex]::Matches($js, [regex]::Escape($a11b))).Count -ne 1) { throw "anchor 11b not unique" }
+    $js = $js.Replace($a11b, '"\u4eca\u5929\u8fd8\u53ef\u5b9a\u5236 \u221e \u9996"')
+    Write-Host "[patch 11] midiDailyLimit 3 -> 9999 + label shows infinity"
+
+    # ── 补丁 12：「我的上传」不再走原生下载（否则永远卡在「下载中」）──
+    # StudioLiteView 的 Dt() 是这么写的：
+    #   me.forEach(Be=>f.initSongStatus(Be.id,Be.styleType)),
+    #   me.length>0 && await f.syncLocalStatus(me.map(Le)),   // → 原生 checkLocalSongs
+    #   q.filter(...).forEach(Be=>f.startDownload(Be))        // → 原生 startDownloadTasks
+    # 整条下载状态机都压在原生层上：syncLocalStatus 问「本地有没有」，startDownload
+    # 发起下载，进度来自 getDownloadTasksProgress。而这几个 action 原生都不回应
+    # （和 getOfflineSongList 同一个现象），于是条目永远停在「下载中 0B/0B」。
+    #
+    # 我们自己上传的曲子根本不需要下载 —— 它的 videoUrl / audioUrl 就是桥直接给的
+    # 本地地址。所以这里绕开原生：syncLocalStatus 不再 await（它可能永远不 settle，
+    # await 会把后面整段卡住），并直接把条目写进 downloadMap 标成 completed。
+    $a12 = 'me.length>0&&await f.syncLocalStatus(me.map(Le)),q.filter(Be=>!f.isDownloaded(Be.id)&&!f.isDownloading(Be.id)).forEach(Be=>f.startDownload(Be))'
+    $r12 = 'me.length>0&&f.syncLocalStatus(me.map(Le)).catch(()=>{}),q.forEach(Be=>f.downloadMap.set(Be.id,{progress:100,state:"completed",totalBytes:1,downloadedBytes:1,downloadSpeed:0,styleType:Be.styleType,name:Be.name,nameKey:Be.nameKey,performanceType:Be.performanceType??""}))'
+    if (([regex]::Matches($js, [regex]::Escape($a12))).Count -ne 1) { throw "anchor 12 not unique" }
+    $js = $js.Replace($a12, $r12)
+    Write-Host "[patch 12] uploaded songs marked downloaded (native download bypassed)"
+
+    # ── 语法断言（**所有 bundle 补丁之后、写回之前**）─────────────────
+    # 上面的字符串替换全是盲替，一旦把语法改坏，结果是黑屏 + 窗口卡死，
+    # 而且从外部很难判断是"补丁写错了"还是"原生层卡了"。
+    # 这里把改好的 bundle 交给 node 解析一次：失败就中止，而 feapp.dat 此刻
+    # 还停在脚本开头从 orig-backup 复制过来的**原版**状态，游戏照常能开。
+    # 注意：它必须放在**最后一个改 $js 的补丁之后**，否则后面的补丁不受保护。
+    $tmpJs = Join-Path $env:TEMP ("feapp-syntax-" + [guid]::NewGuid().ToString('N') + ".mjs")
+    [System.IO.File]::WriteAllText($tmpJs, $js, (New-Object System.Text.UTF8Encoding($false)))
+    $syntaxOut = & node --check $tmpJs 2>&1 | Out-String
+    $syntaxOk = ($LASTEXITCODE -eq 0)
+    Remove-Item $tmpJs -Force -ErrorAction SilentlyContinue
+    if (-not $syntaxOk) {
+        throw "patched bundle failed the syntax check - feapp.dat was left at the pristine backup.`n$syntaxOut"
+    }
+    Write-Host "[check] bundle syntax OK"
 
     $entry.Delete()
     $new = $zip.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)

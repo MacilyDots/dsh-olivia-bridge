@@ -1,17 +1,14 @@
 /* 契约层自测：用 mock ctx 起插件自带的 HTTP 服务，打一遍客户端会打的接口。
  * 这里没有真实的 DSH 环境，agent 桥会失败——正好验证失败路径不会拖垮服务。
- * 每次运行前清空存储，避免把测试信件留到游戏里。
+ *
+ * 存储隔离：用独立的 DSH_HOME 临时目录跑。旧版本直接 rmSync 真实路径下的
+ * letters.json，那会删掉用户正在用的真实信件，所以这里必须隔离。
  */
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { homedir } from "node:os";
 
-const storeFile = join(process.env.DSH_HOME || join(homedir(), ".dsh"), "olivia-bridge", "letters.json");
-try {
-  rmSync(storeFile, { force: true });
-} catch {
-  /* 首次运行时本来就没有 */
-}
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), "dsh-bridge-contract-"));
 
 const { apply } = await import("../lib/index.js");
 
@@ -64,4 +61,5 @@ await call("GET", "/toy/letter/detail?letter_id=999");
 
 console.log(out.join("\n\n"));
 await new Promise((r) => setTimeout(r, 900));
+rmSync(process.env.DSH_HOME, { recursive: true, force: true });
 process.exit(0);

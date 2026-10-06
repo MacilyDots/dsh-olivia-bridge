@@ -49,7 +49,7 @@ DSH agent 会话（preset: 林离）
 
 ## 游戏侧补丁
 
-`tools/patch-feapp.ps1` 改前端包里的九处（每次都先从 `feapp.dat.orig-backup` 重打，幂等）：
+`tools/patch-feapp.ps1` 改前端包里的十二处（每次都先从 `feapp.dat.orig-backup` 重打，幂等）：
 
 | # | 补丁点 | 目的 |
 |---|---|---|
@@ -59,9 +59,12 @@ DSH agent 会话（preset: 林离）
 | 4 | 实例创建时的 `baseURL:""` | 离线版 `conf.app.dat` 没有 `appConfig` 段，1/3 两条路都会短路 |
 | 5 | `index.html` 注入 `tools/inject.js` | 探针 + XHR/fetch 层请求改写（必须插在 `</head>` 之前） |
 | 6 | `m()` 函数 | 主动调 `toggleLetterEntry` 通知原生层显示入口（原生层不认，保留作双保险） |
-| 7 | `N3=!1,Ss=!1,wa=({onComplete` → `N3=!0` | **关键**：解除信箱页「写信」按钮的离线门控 |
+| 7 | `N3=!1,Ss=!1,wa=({onComplete` → `N3=!0,Ss=!0` | **关键**：解除离线门控 —— `N3` 管「写信」按钮，`Ss` 管 MIDI 上传入口；只开前者会出现「信能写、曲子传不了」 |
 | 8 | App 模板里的空 tour 锚点 | 改造成 36px 可点按钮，恢复主页 ↔ 信箱双向导航 |
-| 9 | `disabled:a.remainingCount<=0` + 额度文案 | 写信按钮不受额度影响，文案换成「本地接入 · 不限封数」 |
+| 9 | `disabled:a.remainingCount<=0` + 额度文案 | 写信按钮不受额度影响，文案换成「今天还可寄 ∞ 封」 |
+| 10 | `handleToyLoginSuccess` 末尾挂 `Yn().load()` | 触发离线曲库加载并上报结果（原生桥的返回不经 HTTP，探针看不到） |
+| 11 | `N=b(0),$=b(3)` → `b(9999)` + 文案 | 解除前端硬编码的「每日定制 3 首」上限，文案显示 ∞ |
+| 12 | `syncLocalStatus` / `startDownload` 那段 | 绕开原生下载状态机（原生不回应），自己上传的曲子直接标成已下载 |
 
 ```powershell
 .\tools\patch-feapp.ps1              # 打补丁（幂等，反复运行结果一致）
@@ -69,6 +72,29 @@ DSH agent 会话（preset: 林离）
 .\tools\patch-feapp.ps1 -Restore     # 一键还原原版
 .\tools\verify-patches.ps1           # 只读校验全部补丁是否落地（全 PASS 才算到位）
 ```
+
+补丁是**盲替换**，改坏语法会让游戏黑屏且窗口无响应。所以脚本在写回之前会把改好的 bundle 交给
+`node --check` 解析一次，失败就中止 —— 此刻 `feapp.dat` 还停在从备份复制过来的原版状态，游戏照常能开。
+
+## 定制演奏（MIDI 上传 → 生成 → 播放）
+
+游戏原本要把 MIDI 上传到官方服务器换演奏，桥在本地实现了整条链路：
+
+```
+genObjectUploadUrl → PUT /toy/midi/upload/<key> → midi/generate → 轮询 getGenerateResult
+                                                                        ↓
+                                              WAV（试听） + MP4（演奏，需要 ffmpeg）
+```
+
+- MIDI 解析与 WAV 合成是**纯 JS、零依赖**（移植自 [Comma0103/Linli-Nocturne](https://github.com/Comma0103/Linli-Nocturne) 的 `midi-manifest.js` / `audio-renderer.js`，MIT）。
+- 演奏侧的原生 WebPlayer 是 `<video>`，**播不了 WAV**，所以有 ffmpeg 时会再封一个音频-only MP4。
+  没装 ffmpeg 也能用：任务正常完成、试听照常，只是演奏不出声，日志里会写明。
+  ffmpeg 按 `配置 → OLIVIA_FFMPEG → <DSH_HOME>\olivia-bridge\ffmpeg\ → PATH` 的顺序发现，不硬编码任何路径。
+- 上传是 `PUT`，属于非简单请求，浏览器会先发 `OPTIONS` 预检。`Access-Control-Allow-Methods`
+  里少一个 `PUT`，请求就在离开浏览器之前被拒掉了 —— 而命令行 `curl` / `Invoke-WebRequest` **不走 CORS**，
+  会把这类问题完全掩盖。测试里专门留了一条预检断言盯住它。
+- 存储：`<DSH_HOME>\olivia-bridge\midi\`（`jobs.json` + `<key>.mid` + `<jobId>.wav|.mp4`）。
+- 歌单（「加播单」/「音乐桌面」）走本地 `<DSH_HOME>\olivia-bridge\playlist.json`。
 
 ## 配置
 
@@ -81,6 +107,7 @@ DSH agent 会话（preset: 林离）
 | `provider` / `model` | 空 | 留空则跟随 DSH 默认模型 |
 | `maxDailyLetters` | `1000000` | 每日寄信上限，客户端从 `list` 的 `remainingToday` 读 |
 | `llmFallback` | `true` | agent 路径跑不通时退回直接用 LLM 服务生成回信 |
+| `ffmpegPath` | 空 | 留空自动发现（见上）：`OLIVIA_FFMPEG` → `<DSH_HOME>\olivia-bridge\ffmpeg\ffmpeg.exe` → `PATH` |
 
 ## 观测与排错
 
@@ -107,6 +134,11 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8791/olivia/retry -Body '{"lette
 # 端到端：投一封信等回信
 node tools\verify.mjs
 
+# 三组自测：契约层 / 响应形状 / MIDI 全链路（各自用临时 DSH_HOME，不碰真实信件）
+node test\contract.test.mjs
+node test\response-shape.test.mjs
+node test\midi-flow.test.mjs
+
 # 解压看她那个会话的事件（zstd JSONL）
 node tools\dump-session.mjs
 ```
@@ -126,9 +158,10 @@ node tools\dump-session.mjs
 
 ## 已知边界
 
-- 客户端与后端的契约来自对 0.0.9.627 前端包（`assets/main-*.js`）的逆向，以及社区实现的交叉验证。没实现的端点走 `lib/index.js` 末尾的兜底分支，统一回 `{code:0, message:"", data:{}}`。
+- 客户端与后端的契约来自对 0.0.9.627 前端包（`assets/main-*.js`）的逆向，以及社区实现的交叉验证。没实现的端点走 `lib/index.js` 末尾的兜底分支，返回**字段完备的空信封** —— 不是 `{}`：前端有 33 个调用点会直接对 `data` 里的数组调方法，缺字段就抛 TypeError、Promise 被拒、骨架屏永远转圈。
 - 只实现文字回信。视频/语音回信需要客户端从 `detail.replyVideoUrl` 拿绝对 URL，并以带音轨 MP4 下发，当前没有做。
-- 音乐、歌单、MIDI 链路整体降级成空列表，界面空着但不报错。
+- **官方离线曲库（「自带曲目」）出不来**：它不走 HTTP，而是走原生桥 `getOfflineSongList`，该 action 在停服后的客户端上压根不回应；`songlist.dat` 又是密文，曲目媒体文件本地也没有。想听曲子只能自己上传 MIDI。
+- MIDI 分享码是官方服务端能力，本地不伪造成功（返回 409）。
 - 插件只监听 `127.0.0.1`，不对外网开放；服务端不校验 token，任何本机进程都能读写这些信件。
 - 只动前端包，不碰任何原生 DLL。
 

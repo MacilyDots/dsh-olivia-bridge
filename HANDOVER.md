@@ -299,6 +299,57 @@ return _e(...), m(), { settingsData: l, ... }    // m() 初始化时被显式调
 `cordis.patch.yml` 没有覆盖这个字段，所以走默认值。
 ⚠️ 桥是 DSH 插件，**改完必须重启 DSH** 才生效。
 
+### 6.5 响应形状契约（防止「骨架屏转圈」复发）
+
+**症状**：曲库页骨架屏永远转圈，界面卡住不动。
+
+**真因**：前端主脚本有 33 个接口调用点，其中很多直接对 `data` 里的数组调方法。
+桥漏字段就抛 TypeError → Promise 被拒 → 调用方的 `loading` 永不复位。
+已经炸过三次：
+
+| 端点 | 前端消费点 | 缺什么 |
+|---|---|---|
+| `/getMusicTypeInfo` | `q.musicStyles[0].type`、`performanceModes.map(...)` | 缺 `musicStyles`；**空数组也炸**（要取 `[0]`） |
+| `/getSongStats` | `(await rm()).items.filter(...)` | 缺 `items`（原来混在空列表信封里） |
+| `/searchPerformances` | `s.data.list.map(...)` | 不在 `emptyListPaths` 里 → 走兜底 `{}` → 崩 |
+
+**修法**：不再逐个端点打补丁（那正是补丁循环的来源）：
+
+- `/getMusicTypeInfo`、`/getSongStats` 各自专用返回；
+- `emptyListPaths` 与**兜底**共用 `emptyEnvelope()`，字段取并集
+  （`list / items / results / questions / performanceList / musicStyles /
+  performanceModes / total / hasMore / nextCursor`），前端取哪个字段都不会是 `undefined`。
+
+**验收**：`node test/response-shape.test.mjs` —— 12 项断言，覆盖所有前端会做数组
+操作的端点 + 兜底信封形状。以后新增接口漏字段，会先在这里变红。
+
+⚠️ **改完必须重启 DSH**：桥是 DSH 插件，源码改了不重启，进程里跑的还是旧代码。
+2026-10-07 那次「改了好几轮都没效果」就是这个原因 —— 磁盘源码早已修好，
+`/toy/getMusicTypeInfo` 实测仍然只返回 `{"performanceModes":[]}`。
+
+### 6.6 自带曲目为什么出不来（**已查清，不是补丁问题**）
+
+「自带曲目」来自官方的离线曲库 `oe`（offlineCatalog store，@118612）：
+
+```
+Xm = () => We({action:"getOfflineSongList", data:{}})   // 原生 CEF 查询，不走 HTTP
+Yn = st("offlineCatalog", () => { ... load() 里 await Xm() ... })
+```
+
+三条**独立**的堵点，缺一不可：
+
+| 环节 | 实测结果 |
+|---|---|
+| `getOfflineSongList`（原生给清单） | **不回应** —— `We` 的 Promise 永远 pending（`catalog-loaded` 从未出现） |
+| `songlist.dat`（1.16 MB） | **全是密文**，无任何可读字段，前端靠 `ys()` 解密，外部解不开 |
+| 曲目媒体文件 | **本地没有** —— 游戏目录只有 `Wallpaper_Ambience` 的 22 个 mp3 + 36 个 mp4 待机视频 |
+
+而且显示逻辑本身还带一层 `.filter(q => f.isDownloaded(q.id))` —— **只显示已下载的**。
+官方那 129 首要联网下载，停服后没有下载入口。
+
+**结论：在这个本地环境下「自带曲目」不可能出现**，继续在这上面使劲是白费。
+让用户上传自己的 MIDI 才是能走通的路，桥侧已经实现，见 §12。
+
 ---
 
 ## 7. 已排除的假设（**别重复走**）
@@ -355,7 +406,9 @@ return _e(...), m(), { settingsData: l, ... }    // m() 初始化时被显式调
 | `tools/diagnose.mjs` | 桥的静态诊断 + 让 agent 跑一轮 |
 | `tools/dump-session.mjs` | 解压查看她的会话事件（zstd JSONL） |
 | `tools/decode-probes.mjs` | 解码 bridge.log 里的探针记录 |
-| `test/contract.test.mjs` | 契约层自测（mock ctx 起服务打接口） |
+| `test/contract.test.mjs` | 契约层自测（mock ctx 起服务打接口；**用独立 DSH_HOME 临时目录**，不会碰真实信件） |
+| `test/response-shape.test.mjs` | **响应形状契约测试**：前端会做数组操作的端点字段是否齐全 + 兜底信封（12 项） |
+| `test/midi-flow.test.mjs` | **定制演奏链路端到端测试**：上传 → 生成（首答必须 state=1）→ 轮询 → 我的上传 → WAV/Range |
 | `test/validate-profile-yaml.mjs` | 校验 profile YAML 合法性 |
 
 ---
@@ -402,3 +455,133 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8791/olivia/agent-test
 ```
 
 **注意**：桥只在 DSH 运行时存在。DSH 没开的话，游戏客户端所有请求都会失败。
+
+---
+
+## 12. 「定制演奏」链路（MIDI 上传 → 生成 → 我的上传）
+
+**状态：桥侧已实现，三组测试全绿；前端一行没改；播放待实机确认。**
+
+### 12.1 契约（全部来自 feapp 主脚本实测，含偏移）
+
+| 端点 | 请求 | 响应 | 关键点 |
+|---|---|---|---|
+| `POST /toy/genObjectUploadUrl` | `{filename,type}`（`Zt.MIDI=12`） | `{url,key,headers}` | 客户端随后 `xhr.open("PUT", url)` + 逐个 `setRequestHeader(headers)` + `send(File)`（@77742） |
+| `PUT /toy/midi/upload/<key>` | 原始 MIDI 字节 | — | 桥新增的地址；`key` 由上一个接口发 |
+| `POST /toy/midi/generate` | `{midi_url}` | `{jobId,state:…}` | **首答必须是 `state:1`（排队）**，直接回完成前端不会开始轮询 |
+| `GET /toy/midi/getGenerateResult?job_id=` | — | `{jobId,state,info:{audioUrl,videoUrls[]}}` | 前端只在 `state===3 && info.videoUrls.length` 时判完成（@163160） |
+| `GET /toy/midi/listJobs` / `batchGetResult` / `cancelGenerate` / `deleteJob` | — | — | batch 的 `job_ids` 是**重复 query key** |
+| `GET /toy/searchUserSongs?page_size=&cursor=` | — | `{list:[{userSongId,…}]}` | 列表项必须带 `userSongId`（前端拿它当 `id`） |
+| `GET /toy/midi/media/<jobId>.wav` | — | WAV 字节 | 支持单段 Range |
+
+状态枚举（feapp `De`，@4538）：`Pending=1, Running=2, Finished=3, Canceled=4, Failed=5`。
+轮询间隔 30 s（`lite` 任务列表也是 30 s）。
+
+### 12.2 实现
+
+- **`lib/midi.js`** —— MIDI 解析 + WAV 合成 + 任务存储，**纯 JS 零依赖**。
+  解析与合成移植自 Comma0103/Linli-Nocturne 的 `midi-manifest.js` / `audio-renderer.js`（MIT）。
+- **`lib/index.js`** —— 11 个路由接入。**这 3 个端点已从 `emptyListPaths` 移出**：
+  `/midi/listJobs`、`/midi/batchGetResult`、`/searchUserSongs`。
+- 存储：`<DSH_HOME>\olivia-bridge\midi\`（`jobs.json` + `<key>.mid` + `<jobId>.wav`）。
+- 渲染放在 `setImmediate` 里跑，免得一首几分钟的曲子把 HTTP 请求拖住。
+
+### 12.3 两条媒体 URL 各走各的（WAV 试听 / MP4 演奏）
+
+实测结论（2026-10-07 用户实机确认）：
+
+| 用途 | 走哪条 | 结果 |
+|---|---|---|
+| **试听** | 前端自己的音频组件 `AudioWaveform` ← `info.audioUrl` | **WAV 能直接播，不用 ffmpeg** |
+| **演奏** | 原生 WebPlayer（`<video>` 元素）← `info.videoUrls[0]` | **只认视频容器，WAV 播不了** |
+
+所以桥现在同时产出两份：`<jobId>.wav`（试听）+ `<jobId>.mp4`（音频-only，演奏）。
+`audioUrl` → WAV，`videoUrl` / `videoByTodView` / `videoUrls[0]` → MP4（没有 MP4 时回落到 WAV）。
+
+**ffmpeg 的发现顺序**（`lib/midi.js` 的 `resolveFfmpeg`，**不硬编码任何路径**）：
+
+1. 配置项 `ffmpegPath`（profile 的 `cordis.patch.yml`）
+2. 环境变量 `OLIVIA_FFMPEG`
+3. **`<DSH_HOME>\olivia-bridge\ffmpeg\ffmpeg.exe`** ← 本机用的就是这个，零配置
+4. `PATH` 里的 `ffmpeg`
+
+**没找到 ffmpeg 时优雅降级**：任务照样完成、试听照常，只是演奏拿到 WAV（不出声），
+日志里会写明。刻意**不**在启动时跑一次探测转换（那会拖慢 DSH 启动）。
+
+**踩过的坑**：随手拿现成的 ffmpeg 多半不行 ——
+
+- 有些是**精简构建，脱离原目录就失效**（依赖同目录 DLL，复制到别处连 `-version` 都跑不起来）
+- 随别的软件附带的那些常常**没有 AAC 编码器**
+- 最后用的是完整静态构建（100.5 MB，gyan.dev essentials，v9.0.2），复制到桥数据目录就能用
+
+**判断一个 ffmpeg 能不能用**：`ffmpeg -encoders` 里有 `aac`、`-muxers` 里有 `mp4`，
+**并且真的转一次** —— 光看文件存在不算数（上面那个 462 KB 的精简构建就是反例）。
+
+### 12.4 验证
+
+```powershell
+node .\test\midi-flow.test.mjs        # 上传→生成→轮询→列表→媒体（Range/CORS/MP4/歌单）
+node .\test\response-shape.test.mjs   # 全部端点的响应形状
+```
+
+`midi-flow` 会自动探测本机 ffmpeg：找到就验 MP4 那两条断言，找不到就打 SKIP
+（只验 WAV 降级路径）。
+
+⚠️ 桥改了**必须重启 DSH** 才生效（见 §6.5 的教训）。
+
+### 12.5 踩过的坑：CORS 漏了 PUT（**同类问题必查**）
+
+**症状**：游戏里点上传 → 「上传失败」。前端探针记到了 `PUT /toy/midi/upload/<key>`，
+**而桥日志里一条 PUT 都没有** —— 请求在离开浏览器之前就被拦下了。
+
+**根因**：`applyCors` 里
+
+```js
+res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");   // ← 没有 PUT
+```
+
+上传是 `PUT` + `content-type: application/octet-stream`，属于**非简单请求**，
+浏览器必须先发预检 `OPTIONS`；允许方法列表里没有 PUT，预检就算失败，实际请求根本不发。
+（桥的 `OPTIONS` 处理在 `handle` 开头直接 `return`，**不写日志**，所以从日志看不出来。）
+
+**为什么我最初没发现**：我自己的端到端验证用的是 `Invoke-WebRequest` / node `fetch`，
+**两者都不走 CORS**，所以一路绿灯，把这个致命问题完全掩盖了。
+
+**修复与加固**：
+- `Allow-Methods` → `GET,POST,PUT,OPTIONS`
+- 补 `Access-Control-Expose-Headers: content-range,content-length,accept-ranges`
+  （播放器读 Range 分片要用）
+- `Allow-Headers` 默认值里加上 `range`
+- `MAX_BODY_BYTES` 1MB → 8MB（前端界面写「<1MB」，但请求体还会带边界）
+- **`test/midi-flow.test.mjs` 里加了 CORS 预检断言** —— 这条必须留着，
+  否则同类问题还会再漏一次
+
+**教训：凡是浏览器要跨域发的方法（PUT/DELETE/PATCH）和自定义头，光在命令行测通不算数，
+必须在 `Access-Control-Allow-Methods` / `-Headers` 里声明，并写一条预检断言。**
+
+### 12.6 歌单（「加播单」/「音乐桌面」）
+
+三个端点，`lib/playlist.js` + 本地 `playlist.json`：
+
+```
+POST /toy/addToPlaylist   {item_type, item_id} -> 回显完整条目（幂等）
+POST /toy/delFromPlaylist {item_type, item_id}
+GET  /toy/searchPlaylist  ?cursor=&page_size=  -> {list,total,hasMore,nextCursor}
+```
+
+**返回体必须字段齐全**，两个已实机踩到的坑：
+
+1. **`itemType` 决定列表项的 `id`**。前端的映射是
+   ```js
+   ee = q => q.itemType === pt.PGC_SONG ? q.songId : q.id
+   tt = q => ({ id: ee(q), name: q.name, ... })
+   ```
+   早期这里走空信封（没有 `itemType`/`itemId`）→ `id: undefined` →
+   **第二条加进去被判成重复，只能加一个**。
+2. **`createdAt` 必须是 Unix 秒**。给毫秒或 ISO 字符串，音乐桌面那条就是 `Invalid Date`。
+
+另外条目要带 `videoUrl`（否则音乐桌面里点演奏没有媒体源）——
+加播单时由 `songMetaFor()` 从 `midiStore` 把曲目元数据补齐（名字/媒体/时长）。
+
+**验收**（已写进 `midi-flow.test.mjs` 第 9 步）：加 → 重复加不产生重复项 →
+列表项带 `itemType` → 删。其中 `createdAt < 1e12` 这条断言专门盯住「秒 vs 毫秒」。

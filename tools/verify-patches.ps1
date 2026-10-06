@@ -44,14 +44,23 @@ $checks = @(
     @{ n = '3 setClientConfig hook';  s = '__oliviaBridgePatched=1'; want = $true }
     @{ n = '4 instance baseURL';      s = "baseURL:`"$base/toy`",timeout:1e4"; want = $true }
     @{ n = '6 native entry notify';   s = 'patch6-fired'; want = $true }
-    @{ n = '7 N3 = !0 (write btn)';   s = 'N3=!0,Ss=!1,wa=({onComplete'; want = $true }
-    @{ n = '7 old N3 (must go)';      s = 'N3=!1,Ss=!1'; want = $false }
+    @{ n = '7 N3+Ss = !0';            s = 'N3=!0,Ss=!0,wa=({onComplete'; want = $true }
+    @{ n = '7 old N3-only (must go)'; s = 'N3=!0,Ss=!1'; want = $false }
+    @{ n = '7 old gate (must go)';    s = 'N3=!1,Ss=!1'; want = $false }
     @{ n = '8 sidebar -> studio';     s = 'window.__oliviaNav&&window.__oliviaNav("studio")'; want = $true }
     @{ n = '8 sidebar -> mailbox';    s = 'window.__oliviaNav&&window.__oliviaNav("collection")'; want = $true }
     @{ n = '8 old invisible anchor';  s = 'left-0 w-0 h-[112px] pointer-events-none'; want = $false }
     @{ n = '9 write btn enabled';     s = 'disabled:!1'; want = $true }
     @{ n = '9 old disabled check';    s = 'disabled:a.remainingCount<=0'; want = $false }
-    @{ n = '9 quota text replaced';   s = '\u672c\u5730\u63a5\u5165 \u00b7 \u4e0d\u9650\u5c01\u6570'; want = $true }
+    @{ n = '9 quota text = inf';      s = '\u4eca\u5929\u8fd8\u53ef\u5bc4 \u221e \u5c01'; want = $true }
+    @{ n = '10 catalog load hooked';  s = 'try{return Yn().load()}catch(x){}'; want = $true }
+    @{ n = '10 catalog report';       s = '/olivia/catalog-loaded?n='; want = $true }
+    @{ n = '11 midi cap lifted';      s = 'N=b(0),$=b(9999);let L=null;'; want = $true }
+    @{ n = '11 old cap (must go)';    s = 'N=b(0),$=b(3);let L=null;'; want = $false }
+    @{ n = '11 label = inf';          s = '\u4eca\u5929\u8fd8\u53ef\u5b9a\u5236 \u221e \u9996'; want = $true }
+    @{ n = '11 old label (must go)';  s = 'midi_daily_remaining'; want = $false }
+    @{ n = '12 download bypassed';    s = 'f.downloadMap.set(Be.id,{progress:100,state:"completed"'; want = $true }
+    @{ n = '12 old await (must go)';  s = 'await f.syncLocalStatus(me.map(Le))'; want = $false }
 )
 
 $fail = 0

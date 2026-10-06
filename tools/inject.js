@@ -122,6 +122,82 @@
     }
   } catch (e) {}
 
+  // ---- native bridge recorders ----
+  // The song catalog does NOT come over HTTP: offlineCatalog.load() calls
+  // Xm() -> We({action:"getOfflineSongList"}), and We wraps
+  // window.cefViewQuery({request, onSuccess, onFailure}) with NO timeout --
+  // if the native side never answers, that promise stays pending forever
+  // (which is what we saw: neither catalog-loaded nor catalog-failed showed up).
+  //
+  // Two gotchas learned the hard way:
+  //   1. window.cefViewQuery may not exist yet when this script runs, and it
+  //      may be installed as a non-writable property. Install it lazily with a
+  //      poll, and fall back to defineProperty.
+  //   2. Report the installation outcome, otherwise a silent failure looks
+  //      exactly like "the native side was never called at all".
+  function wrapCef() {
+    var current = window.cefViewQuery;
+    if (typeof current !== 'function') return false;
+    if (current.__oliviaWrapped) return true;
+    function wrapped(opts) {
+      var req = opts && opts.request;
+      var action = '';
+      try { action = String(JSON.parse(req).action || ''); } catch (e) {}
+      var started = Date.now();
+      var patched = {};
+      for (var k in opts) patched[k] = opts[k];
+      patched.onSuccess = function (res) {
+        try { report('/olivia/native-ok', { a: action, ms: Date.now() - started, r: String(res).slice(0, 240) }); } catch (e) {}
+        if (opts.onSuccess) return opts.onSuccess.apply(this, arguments);
+      };
+      patched.onFailure = function (code, msg) {
+        try { report('/olivia/native-fail', { a: action, ms: Date.now() - started, c: String(code), m: String(msg).slice(0, 160) }); } catch (e) {}
+        if (opts.onFailure) return opts.onFailure.apply(this, arguments);
+      };
+      try { report('/olivia/native-req', { a: action, req: String(req).slice(0, 160) }); } catch (e) {}
+      return current.call(window, patched);
+    }
+    wrapped.__oliviaWrapped = true;
+    try {
+      window.cefViewQuery = wrapped;
+      if (window.cefViewQuery === wrapped) return true;
+    } catch (e) {}
+    try {
+      Object.defineProperty(window, 'cefViewQuery', { value: wrapped, writable: true, configurable: true });
+      return window.cefViewQuery === wrapped;
+    } catch (e) {}
+    return false;
+  }
+
+  var cefTries = 0;
+  (function installCef() {
+    if (wrapCef()) {
+      report('/olivia/hook-installed', { hook: 'cefViewQuery', tries: cefTries });
+      return;
+    }
+    if (cefTries++ < 60) {
+      setTimeout(installCef, 250);
+      return;
+    }
+    report('/olivia/hook-installed', { hook: 'cefViewQuery', ok: false, type: typeof window.cefViewQuery });
+  })();
+
+  // ToyPianistClient.invoke is the front-end -> native event channel
+  // (toggleLetterEntry, letterSend, ...). Recording it shows what the
+  // front-end pushed even when the native side does not answer.
+  try {
+    var tpc = window.ToyPianistClient;
+    if (tpc && typeof tpc.invoke === 'function' && !tpc.__oliviaWrapped) {
+      var origInvoke = tpc.invoke.bind(tpc);
+      tpc.invoke = function (action, data) {
+        try { report('/olivia/native-invoke', { a: String(action), d: String(JSON.stringify(data || {})).slice(0, 120) }); } catch (e) {}
+        return origInvoke(action, data);
+      };
+      tpc.__oliviaWrapped = true;
+      report('/olivia/hook-installed', { hook: 'ToyPianistClient.invoke' });
+    }
+  } catch (e) {}
+
   try {
     window.addEventListener('error', function (e) {
       report('/olivia/js-error', {

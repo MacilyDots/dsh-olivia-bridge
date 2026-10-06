@@ -1,0 +1,6 @@
+node_modules/
+*.log
+*.bak
+*.bak-olivia-*
+.DS_Store
+Thumbs.db

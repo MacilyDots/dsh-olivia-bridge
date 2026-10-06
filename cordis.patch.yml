@@ -1,0 +1,17 @@
+# dsh-olivia-bridge bundle patch: one insert row activating the plugin.
+# The host half owns a standalone loopback HTTP server that speaks the
+# BSide: Olivia Lin client contract (/toy/letter/*) and answers letters
+# through a DSH agent session.
+- insert:
+    - id: olivia-bridge
+      name: 'dsh-olivia-bridge'
+      config:
+        port: 8791
+        # profile 里注册的 preset 的 config.id（行 id 是 preset-olivia）
+        presetId: olivia
+        # 留空 = 跟随会话默认权限；写信本身不碰文件系统
+        permissionPreset: ''
+        # agent 路径跑不通时，退回直接用 LLM 服务生成回信
+        llmFallback: true
+        # 等 agent 回信的上限，超时才走兜底
+        replyTimeoutMs: 60000

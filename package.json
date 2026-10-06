@@ -20,6 +20,15 @@
     "bside"
   ],
   "license": "MIT",
+  "author": "MacilyDots",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MacilyDots/dsh-olivia-bridge.git"
+  },
+  "homepage": "https://github.com/MacilyDots/dsh-olivia-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/MacilyDots/dsh-olivia-bridge/issues"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

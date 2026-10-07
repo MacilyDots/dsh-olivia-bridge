@@ -1,6 +1,6 @@
 {
   "name": "dsh-olivia-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "BSide: Olivia Lin bridge — serves the game client's /toy/letter/* contract locally and answers each letter through a DSH agent session.",
   "type": "module",
   "main": "./lib/index.js",

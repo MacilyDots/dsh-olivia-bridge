@@ -49,7 +49,7 @@ DSH agent 会话（preset: 林离）
 
 ## 游戏侧补丁
 
-`tools/patch-feapp.ps1` 改前端包里的十二处（每次都先从 `feapp.dat.orig-backup` 重打，幂等）：
+`tools/patch-feapp.ps1` 改前端包里的十五处（每次都先从 `feapp.dat.orig-backup` 重打，幂等）：
 
 | # | 补丁点 | 目的 |
 |---|---|---|
@@ -60,11 +60,14 @@ DSH agent 会话（preset: 林离）
 | 5 | `index.html` 注入 `tools/inject.js` | 探针 + XHR/fetch 层请求改写（必须插在 `</head>` 之前） |
 | 6 | `m()` 函数 | 主动调 `toggleLetterEntry` 通知原生层显示入口（原生层不认，保留作双保险） |
 | 7 | `N3=!1,Ss=!1,wa=({onComplete` → `N3=!0,Ss=!0` | **关键**：解除离线门控 —— `N3` 管「写信」按钮，`Ss` 管 MIDI 上传入口；只开前者会出现「信能写、曲子传不了」 |
-| 8 | App 模板里的空 tour 锚点 | 改造成 36px 可点按钮，恢复主页 ↔ 信箱双向导航 |
+| 8 | App 模板里的空 tour 锚点 | **保持原样**：导航已挪到各页标题栏（补丁 14），这里不再动 |
 | 9 | `disabled:a.remainingCount<=0` + 额度文案 | 写信按钮不受额度影响，文案换成「今天还可寄 ∞ 封」 |
 | 10 | `handleToyLoginSuccess` 末尾挂 `Yn().load()` | 触发离线曲库加载并上报结果（原生桥的返回不经 HTTP，探针看不到） |
 | 11 | `N=b(0),$=b(3)` → `b(9999)` + 文案 | 解除前端硬编码的「每日定制 3 首」上限，文案显示 ∞ |
-| 12 | `syncLocalStatus` / `startDownload` 那段 | 绕开原生下载状态机（原生不回应），自己上传的曲子直接标成已下载 |
+| 12 | `syncLocalStatus` / `startDownload` 那段 | 绕开原生下载状态机（原生不回应），自己上传的曲子直接标成已下载（只改「我的上传」处，官方曲库那处保留） |
+| 13 | 信箱头部组件里的「分享信件」按钮 | 换成「删除」，调 `window.__oliviaDeleteMail(mail.id)` → 桥的 `/toy/letter/delete`。前端 store 只 splice 自己的缓存，不走服务端的话刷新就回来 |
+| 14 | 曲库 / 信箱页的标题栏 `h1` | 换成「曲库」「信件」两个**固定顺序**的平行入口（曲库恒在左），当前页全亮、另一页 `opacity:.5`，走 `window.__oliviaNav()` |
+| 15 | 右上角用户菜单里的「测试版」标签 | 从容器子节点里摘掉 |
 
 ```powershell
 .\tools\patch-feapp.ps1              # 打补丁（幂等，反复运行结果一致）
@@ -95,6 +98,10 @@ genObjectUploadUrl → PUT /toy/midi/upload/<key> → midi/generate → 轮询 g
   会把这类问题完全掩盖。测试里专门留了一条预检断言盯住它。
 - 存储：`<DSH_HOME>\olivia-bridge\midi\`（`jobs.json` + `<key>.mid` + `<jobId>.wav|.mp4`）。
 - 歌单（「加播单」/「音乐桌面」）走本地 `<DSH_HOME>\olivia-bridge\playlist.json`。
+- 删除也是真删：「我的上传」里删歌走 `POST /toy/deleteUserSong`（`userSongId`），会连 WAV/MP4 一起清掉；
+  信件走 `POST /toy/letter/delete`（`letter_id`），连她的回信一起删、幂等（重复删返回 `deleted:false`）。
+  这两个端点以前落到 `lib/index.js` 末尾的兜底分支，返回 `code:0` + 空信封 ——
+  界面看着删掉了、刷新又回来，是典型的静默失败。另留了一个 `POST /toy/letter/clear` 清空全部往来（前端暂未接入）。
 
 ## 配置
 
@@ -128,16 +135,26 @@ Invoke-RestMethod http://127.0.0.1:8791/olivia/diag
 # 让 agent 真跑一轮，回报前后快照（定位「会话建了但没人跑」）
 Invoke-RestMethod -Method Post http://127.0.0.1:8791/olivia/agent-test
 
+# 直接打一次 LLM，拿底层真实错误。默认按 agent 路线复现：tools / reasoningEffort /
+# maxTokens 取自会话最近一次请求头 —— 这三样正是 agent 路径与裸调用唯一的差别
+# （实测同一 provider/model 下裸调成功、agent 路径必失败）。返回里的 errorChain
+# 是沿 cause 展开的（≤6 层），TRANSPORT 那句的真因永远在第 2 层往后。
+Invoke-RestMethod -Method Post http://127.0.0.1:8791/olivia/llm-test -ContentType 'application/json' -Body '{"text":"ping"}'
+
+# 对照 / 单变量：{"plain":true} 退回只发 provider/model；也可单独覆盖
+# {"plain":true,"reasoningEffort":"high"} 或直接给 {"tools":[],"maxTokens":4096}
+
 # 重投某封失败的信
 Invoke-RestMethod -Method Post http://127.0.0.1:8791/olivia/retry -Body '{"letterId":"3"}' -ContentType 'application/json'
 
 # 端到端：投一封信等回信
 node tools\verify.mjs
 
-# 三组自测：契约层 / 响应形状 / MIDI 全链路（各自用临时 DSH_HOME，不碰真实信件）
+# 四组自测：契约层 / 响应形状 / MIDI 全链路 / profile YAML（各自用临时 DSH_HOME，不碰真实信件）
 node test\contract.test.mjs
 node test\response-shape.test.mjs
 node test\midi-flow.test.mjs
+node test\validate-profile-yaml.mjs
 
 # 解压看她那个会话的事件（zstd JSONL）
 node tools\dump-session.mjs

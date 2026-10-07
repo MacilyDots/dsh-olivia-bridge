@@ -90,8 +90,23 @@
 |---|---|
 | `GET /olivia/diag` | preset 是否解析、会话消息数、inbox、phase |
 | `POST /olivia/agent-test` | 让 agent 真跑一轮并回报前后快照 |
+| `POST /olivia/llm-test` | **直接打一次 LLM，返回底层真实错误 + 整条 cause 链** |
 | `POST /olivia/retry` | 重投某封失败的信 |
 | `GET /olivia/*`（其他） | 探针上报入口（见第 6 节） |
+
+`/olivia/llm-test` 默认按 **agent 路线**复现：`tools` / `reasoningEffort` / `maxTokens` 取自她那个
+会话最近一次 request header（这三样正是 agent 路径与裸调用唯一的差别 —— 实测同一
+provider/model 下裸调成功、agent 路径必失败）。body 可带：
+
+```jsonc
+{ "text": "ping" }           // 默认：带 tools + reasoningEffort 复现 agent 路线
+{ "text": "ping", "plain": true }   // 对照：只发 provider/model（旧行为）
+{ "plain": true, "reasoningEffort": "high" }  // 单变量：只加某一样
+```
+
+返回里的 `errorChain` 是沿 `cause` 展开的错误链（最多 6 层）——
+`TRANSPORT` 这句话的真因永远在第 2 层往后，第一层只有那句误导人的
+"DeepSeek Messages transport failed"。
 
 ---
 

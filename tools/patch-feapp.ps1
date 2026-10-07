@@ -1,4 +1,4 @@
-﻿# patch-feapp.ps1 — 把《BSide: Olivia Lin》客户端接到本地 DSH 桥
+# patch-feapp.ps1 — 把《BSide: Olivia Lin》客户端接到本地 DSH 桥
 #
 # 全部补丁都改在前端包里，不动任何原生 DLL：
 #   1. axios 工厂 jl() 的基址钉死到本地 —— 不依赖原生层是否下发 clientConfig
@@ -138,19 +138,15 @@ try {
     $js = $js.Replace($a7, $r7)
     Write-Host "[patch 7] feature flags N3=!0 + Ss=!0 (write button + MIDI upload button)"
 
-    # ── 补丁 8：把空的 tour 锚点改造成真正的侧边栏（主页 <-> 信箱 双向）──
-    # App 模板里这两个 div 原本是给新手引导用的定位锚点，父容器是
-    # `w-0 ... pointer-events-none`（宽 0、且不接收鼠标事件），所以根本点不到。
-    # 这也正是「信箱页进得去、出不来」的原因：LITE 模式下 /collection 是信箱、
-    # /studio 是曲库，而两者之间原本没有任何前端导航（官方 PRO 模式靠原生侧栏）。
-    # 这里把它们做成 36px 宽的两个按钮，点击调用注入脚本暴露的
-    # window.__oliviaNav()（内部走 Vue Router 的 replace）。
+    # ── 补丁 8：侧边栏锚点保持原样（导航已改到标题栏，见补丁 14）────────────
+    # App 模板里这两个 div 原本是新手引导的定位锚点，父容器是
+    # `w-0 ... pointer-events-none`（宽 0、不接收鼠标事件），所以既不可见也点不到。
+    # 早先这里把它们改造成窗口左缘固定的「曲」「信」两个竖排按钮 —— 能用了，
+    # 但悬浮在页面标题的视觉层级之外，用户反馈「丑」。
+    # 现在导航改到各页标题栏右侧（补丁 14），这里恢复原状、不再修改。
     $a8 = 'ef=n("div",{class:"flex flex-col items-center justify-center fixed top-1/2 -translate-y-1/2 left-0 w-0 h-[112px] pointer-events-none"},[n("div",{id:"tour-studio",class:"w-full h-full"}),n("div",{id:"tour-collection",class:"w-full h-full"})],-1)'
-    $btn8 = 'w-full h-full flex items-center justify-center rounded-2 bg-grey-1 hover:bg-grey-2 text-text-secondary text-body-m cursor-pointer select-none'
-    $r8 = 'ef=n("div",{class:"flex flex-col items-center justify-center fixed top-1/2 -translate-y-1/2 left-2 w-9 h-[112px] gap-2 z-50"},[n("div",{id:"tour-studio",class:"' + $btn8 + '",onClick:()=>window.__oliviaNav&&window.__oliviaNav("studio")},"\u66f2"),n("div",{id:"tour-collection",class:"' + $btn8 + '",onClick:()=>window.__oliviaNav&&window.__oliviaNav("collection")},"\u4fe1")],-1)'
     if (([regex]::Matches($js, [regex]::Escape($a8))).Count -ne 1) { throw "anchor 8 not unique" }
-    $js = $js.Replace($a8, $r8)
-    Write-Host "[patch 8] sidebar nav restored (studio <-> mailbox)"
+    Write-Host "[patch 8] sidebar anchors left untouched (nav moved to page headers)"
 
     # ── 补丁 9：写信入口不再受额度影响 ────────────────────────────────
     # 真正的额度限制在桥侧（lib/index.js 的 maxDailyLetters），前端这里只负责
@@ -228,7 +224,47 @@ try {
     $js = $js.Replace($a12, $r12)
     Write-Host "[patch 12] uploaded songs marked downloaded (native download bypassed)"
 
-    # ── 语法断言（**所有 bundle 补丁之后、写回之前**）─────────────────
+    # ── 补丁 13：把信箱详情区的「分享信件」按钮换成「删除」──────────────
+    # 原做法是在详情组件后面另插一个 absolute 定位的按钮，但那个位置的三元条件
+    # （o(M)）实测恒为假，按钮根本不出现（已用无条件渲染验证：那段代码本身没问题）；
+    # 而且另插的按钮会叠在标题栏上，不协调。
+    # 改成直接替换头部组件 MailBoxContentHeader（G4）里的分享按钮：
+    #   文字 mailbox_share_letter -> 删除；图标 type share -> delete；
+    #   onClick 由 emit("share") 改为调 inject.js 挂的 __oliviaDeleteMail(mail.id)，
+    #   由它打桥的 /toy/letter/delete（桥侧已实现真删除）。
+    # i 是该组件 setup 里的 props（const i = e），render 闭包可见。
+    $a13 = 'n("button",{type:"button",class:"flex items-center gap-1 px-3 py-1.5 rounded-3 bg-primary-2 hover:bg-primary-1 active:bg-primary-3 text-grey-0 text-body-s font-medium cursor-pointer transition-colors",onClick:p},[k(y,{type:"share"}),pe(" "+v(o(s)("mailbox_share_letter")),1)])'
+    $r13 = 'n("button",{type:"button",class:"flex items-center gap-1 px-3 py-1.5 rounded-3 bg-primary-2 hover:bg-primary-1 active:bg-primary-3 text-grey-0 text-body-s font-medium cursor-pointer transition-colors",onClick:()=>{window.__oliviaDeleteMail&&window.__oliviaDeleteMail(i.mail.id)}},[k(y,{type:"delete"}),pe(" "+v("\u5220\u9664"),1)])'
+    if (([regex]::Matches($js, [regex]::Escape($a13))).Count -ne 1) { throw "anchor 13 not unique" }
+    $js = $js.Replace($a13, $r13)
+    Write-Host "[patch 13] mailbox share button replaced by delete"
+
+    # ── 补丁 14：曲库 / 信箱 标题栏改成两个固定顺序的平行入口 ────────────
+    # 关键点：**顺序固定** —— 「曲库」永远在左、「信件」永远在右，不随当前页互换
+    # （早先的写法是当前页占左，导致点完右边那个它就跑到了左边，观感很跳）。
+    # 当前页那个保持全亮、另一个降到 opacity .5 并在 hover 时恢复，用来区分「你在哪」。
+    # 字体形状/大小沿用原标题的 class（text-text-title text-headline-l）；
+    # 去框用内联 style（编译期 CSS 未必有 tailwind 的边框/内距类）；间距也用内联。
+    $navTitle = 'text-text-title text-headline-l'
+    $navBase = 'background:transparent;border:none;padding:0;cursor:pointer'
+    $navGap = 'background:transparent;border:none;padding:0;cursor:pointer;margin-left:24px'
+    $a14a = 'n("div",F3,[n("h1",G3,v(o(t)("studio_title")),1)])'
+    $r14a = 'n("div",F3,[n("button",{type:"button",class:"' + $navTitle + '",style:"' + $navBase + '",onClick:()=>window.__oliviaNav&&window.__oliviaNav("studio")},v(o(t)("studio_title"))),n("button",{type:"button",class:"' + $navTitle + '",style:"' + $navGap + ';opacity:.5",onClick:()=>window.__oliviaNav&&window.__oliviaNav("collection")},v(o(t)("mailbox_title")))])'
+    if (([regex]::Matches($js, [regex]::Escape($a14a))).Count -ne 1) { throw "anchor 14a not unique" }
+    $js = $js.Replace($a14a, $r14a)
+    $a14b = 'n("div",u5,[n("h1",p5,v(o(t)("mailbox_title")),1)])'
+    $r14b = 'n("div",u5,[n("button",{type:"button",class:"' + $navTitle + '",style:"' + $navBase + ';opacity:.5",onClick:()=>window.__oliviaNav&&window.__oliviaNav("studio")},v(o(t)("studio_title"))),n("button",{type:"button",class:"' + $navTitle + '",style:"' + $navGap + '",onClick:()=>window.__oliviaNav&&window.__oliviaNav("collection")},v(o(t)("mailbox_title")))])'
+    if (([regex]::Matches($js, [regex]::Escape($a14b))).Count -ne 1) { throw "anchor 14b not unique" }
+    $js = $js.Replace($a14b, $r14b)
+    Write-Host "[patch 14] fixed-order header nav (studio left / mailbox right)"
+    # ── 补丁 15：移除右上角的「测试版」标签 ──────────────────────────────
+    # 它在用户菜单容器里（absolute right-5 ... z-50）的第二个子节点，
+    # 是 n("div",r0,v(o(a)("common_beta_tag")),1)。直接从这个数组里摘掉。
+    $a15 = 'z-50"},[n("div",r0,v(o(a)("common_beta_tag")),1),'
+    $r15 = 'z-50"},['
+    if (([regex]::Matches($js, [regex]::Escape($a15))).Count -ne 1) { throw "anchor 15 not unique" }
+    $js = $js.Replace($a15, $r15)
+    Write-Host "[patch 15] beta tag removed from header"    # ── 语法断言（**所有 bundle 补丁之后、写回之前**）─────────────────
     # 上面的字符串替换全是盲替，一旦把语法改坏，结果是黑屏 + 窗口卡死，
     # 而且从外部很难判断是"补丁写错了"还是"原生层卡了"。
     # 这里把改好的 bundle 交给 node 解析一次：失败就中止，而 feapp.dat 此刻

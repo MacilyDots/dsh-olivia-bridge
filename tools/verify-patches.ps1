@@ -1,4 +1,4 @@
-﻿# verify-patches.ps1 — 校验 feapp.dat 里所有前端补丁的落地状态
+# verify-patches.ps1 — 校验 feapp.dat 里所有前端补丁的落地状态
 #
 # 只读：解包 = 检查，绝不写回。改完补丁后跑一次，比翻 bridge.log 快得多。
 # 用法：.\tools\verify-patches.ps1 [-GameDir <游戏根目录>] [-Port 8791]
@@ -47,9 +47,9 @@ $checks = @(
     @{ n = '7 N3+Ss = !0';            s = 'N3=!0,Ss=!0,wa=({onComplete'; want = $true }
     @{ n = '7 old N3-only (must go)'; s = 'N3=!0,Ss=!1'; want = $false }
     @{ n = '7 old gate (must go)';    s = 'N3=!1,Ss=!1'; want = $false }
-    @{ n = '8 sidebar -> studio';     s = 'window.__oliviaNav&&window.__oliviaNav("studio")'; want = $true }
-    @{ n = '8 sidebar -> mailbox';    s = 'window.__oliviaNav&&window.__oliviaNav("collection")'; want = $true }
-    @{ n = '8 old invisible anchor';  s = 'left-0 w-0 h-[112px] pointer-events-none'; want = $false }
+    @{ n = '14 nav hook -> studio';     s = 'window.__oliviaNav&&window.__oliviaNav("studio")'; want = $true }
+    @{ n = '14 nav hook -> mailbox';    s = 'window.__oliviaNav&&window.__oliviaNav("collection")'; want = $true }
+    @{ n = '8 anchors untouched';  s = 'left-0 w-0 h-[112px] pointer-events-none'; want = $true }
     @{ n = '9 write btn enabled';     s = 'disabled:!1'; want = $true }
     @{ n = '9 old disabled check';    s = 'disabled:a.remainingCount<=0'; want = $false }
     @{ n = '9 quota text = inf';      s = '\u4eca\u5929\u8fd8\u53ef\u5bc4 \u221e \u5c01'; want = $true }
@@ -60,7 +60,14 @@ $checks = @(
     @{ n = '11 label = inf';          s = '\u4eca\u5929\u8fd8\u53ef\u5b9a\u5236 \u221e \u9996'; want = $true }
     @{ n = '11 old label (must go)';  s = 'midi_daily_remaining'; want = $false }
     @{ n = '12 download bypassed';    s = 'f.downloadMap.set(Be.id,{progress:100,state:"completed"'; want = $true }
-    @{ n = '12 old await (must go)';  s = 'await f.syncLocalStatus(me.map(Le))'; want = $false }
+    # 判据要盯「我的上传」那处（Dt）：原锚点里的 startDownload 必须消失。
+    # 别用 `await f.syncLocalStatus(...)` 当判据 —— 官方曲库的 La() 里还有一处
+    # 长得一样的调用，那处本来就该保留（曲库本地没歌，状态无所谓），会永远误报。
+    @{ n = '12 old startDownload (must go)'; s = 'q.filter(Be=>!f.isDownloaded(Be.id)&&!f.isDownloading(Be.id)).forEach(Be=>f.startDownload(Be))'; want = $false }
+    @{ n = '13 mailbox delete btn';   s = 'window.__oliviaDeleteMail(i.mail.id)'; want = $true }
+      @{ n = '14 studio->mailbox nav'; s = 'window.__oliviaNav("collection")'; want = $true }
+      @{ n = '14 mailbox->studio nav'; s = 'window.__oliviaNav("studio")'; want = $true }
+      @{ n = '15 beta tag gone';        s = 'common_beta_tag'; want = $false }
 )
 
 $fail = 0

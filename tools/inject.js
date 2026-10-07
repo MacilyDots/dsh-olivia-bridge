@@ -58,6 +58,27 @@
     if (r) r.replace({ name: name });
   };
 
+  // Consumed by the mailbox patch (patch 13), which adds a delete button beside
+  // the letter detail pane. It MUST go through the bridge: the front-end store
+  // only splices its local array (`removeMailFromList`), so without a server
+  // call the letter reappears on the next refresh.
+  window.__oliviaDeleteMail = function (id) {
+    if (id === undefined || id === null || id === '') return;
+    fetch(LOCAL + '/toy/letter/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ letter_id: String(id) })
+    }).then(function (r) {
+      return r.json();
+    }).then(function () {
+      // The store keeps its own cache, so the cheapest way to make the list
+      // agree with the server is a reload. Hash routing survives it.
+      if (window.location && typeof window.location.reload === 'function') {
+        window.location.reload();
+      }
+    }).catch(function () {});
+  };
+
   // Dump the UI structure: where the tour anchors really are (the sidebar in
   // the App template is `w-0 ... pointer-events-none`, so it may well be an
   // invisible tour anchor rather than a clickable entry), plus every visible

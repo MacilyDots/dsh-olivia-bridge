@@ -1,6 +1,9 @@
 node_modules/
 *.log
 *.bak
+*.bak-*
 *.bak-olivia-*
+# 一次性探针（正式回归在 test/ 下，用临时 DSH_HOME）
+_del-probe.mjs
 .DS_Store
 Thumbs.db

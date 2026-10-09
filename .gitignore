@@ -5,5 +5,10 @@ node_modules/
 *.bak-olivia-*
 # 一次性探针（正式回归在 test/ 下，用临时 DSH_HOME）
 _del-probe.mjs
+# 本机专用的桌面色纸工具：不属于插件功能，且内含本机路径（ffmpeg / 输出目录 / 脚本绝对路径），
+# 只在本机使用，不随仓库发布。
+tools/bside-wallpaper.ps1
+tools/bside-wallpaper-silent.vbs
+tools/transcode-wallpaper.ps1
 .DS_Store
 Thumbs.db

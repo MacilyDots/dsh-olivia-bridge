@@ -1,204 +1,206 @@
 # dsh-olivia-bridge
 
-把《BSide: Olivia Lin》（米哈游「林离」）的客户端接到 DSH 上——游戏里写的信，由 DSH 的一个 agent 会话来回。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 它做什么
+Wire the *BSide: Olivia Lin* client (miHoYo's 林离) into DSH — letters written in the game are answered by a DSH agent session.
 
-官方服务器 2026-08-31 关停后，客户端只剩本地演奏和壁纸。这个插件在回环地址上起一个 HTTP 服务，冒充客户端原本要连的后端，然后把每封来信投进一个持久的 DSH agent 会话；她的回信写回本地信件库，客户端照常显示。
+## What it does
+
+After the official servers shut down on 2026-08-31, the client was left with nothing but local performance playback and wallpapers. This plugin starts an HTTP server on the loopback address, impersonating the backend the client used to talk to, then feeds every incoming letter into a persistent DSH agent session; her replies are written back to the local letter store and the client displays them as usual.
 
 ```
 Olivia.exe 0.0.9.627
    │  POST /toy/letter/send · GET /toy/letter/list|detail|unread_count
    ▼
 dsh-olivia-bridge   127.0.0.1:8791
-   │  信件存储 <DSH_HOME>\olivia-bridge\letters.json
+   │  letter store <DSH_HOME>\olivia-bridge\letters.json
    ▼
-DSH agent 会话（preset: 林离）
+DSH agent session (preset: 林离)
    │  ctx.agents.create → followup → whenIdle
    ▼
-会话历史即她的记忆：每封信都进同一个 session，不需要额外的记忆库
+Session history is her memory: every letter goes into the same session, no separate memory store needed
 ```
 
-会话 id 固定为 `olivia-letterbox`，插件启动时 `agents.resume()` 接回同一个会话，所以 DSH 重启后她仍然记得之前每一封信——这是这个方案区别于其他本地实现的地方。
+The session id is fixed to `olivia-letterbox`, and the plugin calls `agents.resume()` on startup to reattach to the same session, so she still remembers every previous letter after a DSH restart — this is what sets this approach apart from other local implementations.
 
-## 安装
+## Installation
 
-需要 DSH 桌面端 0.2.x（Windows）与 `0.0.9.627` 版游戏客户端。
+Requires DSH desktop 0.2.x (Windows) and game client `0.0.9.627`.
 
 ```powershell
-# 1. 把插件挂进 desktop profile（改动前自动备份成 *.bak-olivia-<时间戳>）
+# 1. Mount the plugin into the desktop profile (existing files are backed up to *.bak-olivia-<timestamp> first)
 .\tools\install-desktop.ps1
 
-# 2. 给游戏打前端补丁（原版先备份成 feapp.dat.orig-backup）
+# 2. Patch the game's frontend bundle (the original is backed up to feapp.dat.orig-backup first)
 .\tools\patch-feapp.ps1 -GameDir 'X:\SteamLibrary\steamapps\common\BSide Olivia Lin Test'
 
-# 3. 重启 DSH
+# 3. Restart DSH
 ```
 
-`install-desktop.ps1` 做三件事：profile 的 `package.json` 加 `file:` 依赖与 bundle 条目、
-建 `node_modules\dsh-olivia-bridge` junction 指向本仓库、`cordis.patch.yml` 末尾追加
-`preset-olivia`（林离人格，`complete: true`，不挂工具）。
+`install-desktop.ps1` does three things: adds a `file:` dependency and a bundle entry to the profile's `package.json`,
+creates a `node_modules\dsh-olivia-bridge` junction pointing at this repository, and appends
+`preset-olivia` to the end of `cordis.patch.yml` (the 林离 persona, `complete: true`, no tools attached).
 
-游戏目录也可以设一次环境变量，之后游戏侧的两个脚本都不用再传参：
+The game directory can also be set once as an environment variable, after which neither of the two game-side scripts needs it passed in again:
 
 ```powershell
 [Environment]::SetEnvironmentVariable('BSIDE_GAME_DIR', 'X:\SteamLibrary\steamapps\common\BSide Olivia Lin Test', 'User')
 ```
 
-补丁锚点是按 `0.0.9.627` 的前端包写的，每一步都校验锚点唯一性，换版本会直接报错中止，不会写坏文件。
+The patch anchors were written against the `0.0.9.627` frontend bundle. Every step verifies that its anchor is unique; on a different version the script aborts with an error instead of writing corrupt files.
 
-## 游戏侧补丁
+## Game-side patches
 
-`tools/patch-feapp.ps1` 改前端包里的十五处（每次都先从 `feapp.dat.orig-backup` 重打，幂等）：
+`tools/patch-feapp.ps1` changes fifteen places in the frontend bundle (every run starts over from `feapp.dat.orig-backup`, so it is idempotent):
 
-| # | 补丁点 | 目的 |
+| # | Patch site | Purpose |
 |---|---|---|
-| 1 | `jl()` 里的 `Te.defaults.baseURL` | axios 基址钉死到本地 |
-| 2 | `N=j(()=>d.value.offlineMode===!0)` → `!1` | 关掉离线门禁（为 true 时请求拦截器首行直接 throw） |
-| 3 | `setClientConfig` 覆盖 | `offlineMode=false` + `toyApiUrl` 指向本地 + `appInfo.Channel="demo"`，绕开已停服的米哈游账号登录 |
-| 4 | 实例创建时的 `baseURL:""` | 离线版 `conf.app.dat` 没有 `appConfig` 段，1/3 两条路都会短路 |
-| 5 | `index.html` 注入 `tools/inject.js` | 探针 + XHR/fetch 层请求改写（必须插在 `</head>` 之前） |
-| 6 | `m()` 函数 | 主动调 `toggleLetterEntry` 通知原生层显示入口（原生层不认，保留作双保险） |
-| 7 | `N3=!1,Ss=!1,wa=({onComplete` → `N3=!0,Ss=!0` | **关键**：解除离线门控 —— `N3` 管「写信」按钮，`Ss` 管 MIDI 上传入口；只开前者会出现「信能写、曲子传不了」 |
-| 8 | App 模板里的空 tour 锚点 | **保持原样**：导航已挪到各页标题栏（补丁 14），这里不再动 |
-| 9 | `disabled:a.remainingCount<=0` + 额度文案 | 写信按钮不受额度影响，文案换成「今天还可寄 ∞ 封」 |
-| 10 | `handleToyLoginSuccess` 末尾挂 `Yn().load()` | 触发离线曲库加载并上报结果（原生桥的返回不经 HTTP，探针看不到） |
-| 11 | `N=b(0),$=b(3)` → `b(9999)` + 文案 | 解除前端硬编码的「每日定制 3 首」上限，文案显示 ∞ |
-| 12 | `syncLocalStatus` / `startDownload` 那段 | 绕开原生下载状态机（原生不回应），自己上传的曲子直接标成已下载（只改「我的上传」处，官方曲库那处保留） |
-| 13 | 信箱头部组件里的「分享信件」按钮 | 换成「删除」，调 `window.__oliviaDeleteMail(mail.id)` → 桥的 `/toy/letter/delete`。前端 store 只 splice 自己的缓存，不走服务端的话刷新就回来 |
-| 14 | 曲库 / 信箱页的标题栏 `h1` | 换成「曲库」「信件」两个**固定顺序**的平行入口（曲库恒在左），当前页全亮、另一页 `opacity:.5`，走 `window.__oliviaNav()` |
-| 15 | 右上角用户菜单里的「测试版」标签 | 从容器子节点里摘掉 |
+| 1 | `Te.defaults.baseURL` inside `jl()` | Pin the axios base URL to local |
+| 2 | `N=j(()=>d.value.offlineMode===!0)` → `!1` | Turn off the offline gate (when true, the request interceptor throws on its first line) |
+| 3 | `setClientConfig` override | `offlineMode=false` + `toyApiUrl` pointing local + `appInfo.Channel="demo"`, bypassing the shut-down miHoYo account login |
+| 4 | `baseURL:""` at instance creation | The offline `conf.app.dat` has no `appConfig` section, so both paths 1 and 3 short-circuit |
+| 5 | `tools/inject.js` injected into `index.html` | Probe plus request rewriting at the XHR/fetch layer (must be inserted before `</head>`) |
+| 6 | the `m()` function | Call `toggleLetterEntry` to tell the native layer to show the entry point (the native layer ignores it; kept as a second safeguard) |
+| 7 | `N3=!1,Ss=!1,wa=({onComplete` → `N3=!0,Ss=!0` | **Key**: lift the offline gating — `N3` controls the "write letter" button and `Ss` controls the MIDI upload entry; enabling only the former leaves you with "letters can be written, songs cannot be uploaded" |
+| 8 | the empty tour anchor in the App template | **Left as is**: navigation has moved to each page's title bar (patch 14), so nothing is touched here |
+| 9 | `disabled:a.remainingCount<=0` plus the quota copy | The write-letter button no longer depends on the quota, and the copy becomes "∞ letters left today" |
+| 10 | `Yn().load()` appended at the end of `handleToyLoginSuccess` | Trigger the offline song library load and report the result (the native bridge's reply never goes over HTTP, so the probe cannot see it) |
+| 11 | `N=b(0),$=b(3)` → `b(9999)` plus copy | Remove the frontend's hard-coded cap of "3 custom songs per day"; the copy shows ∞ |
+| 12 | the `syncLocalStatus` / `startDownload` block | Bypass the native download state machine (the native side does not respond) and mark self-uploaded songs as already downloaded (only the "my uploads" site is changed; the official library site is left alone) |
+| 13 | the "share letter" button in the mailbox header component | Replaced with "delete", calling `window.__oliviaDeleteMail(mail.id)` → the bridge's `/toy/letter/delete`. The frontend store only splices its own cache, so without the server call the letter is back after a refresh |
+| 14 | the `h1` in the title bar of the library / mailbox pages | Replaced with two parallel entries, "library" and "letters", in a **fixed order** (the library is always on the left); the current page is fully lit and the other sits at `opacity:.5`, switching through `window.__oliviaNav()` |
+| 15 | the "beta" label in the top-right user menu | Removed from the container's child nodes |
 
 ```powershell
-.\tools\patch-feapp.ps1              # 打补丁（幂等，反复运行结果一致）
-.\tools\patch-feapp.ps1 -Port 8800   # 换端口
-.\tools\patch-feapp.ps1 -Restore     # 一键还原原版
-.\tools\verify-patches.ps1           # 只读校验全部补丁是否落地（全 PASS 才算到位）
+.\tools\patch-feapp.ps1              # apply the patches (idempotent, repeated runs give the same result)
+.\tools\patch-feapp.ps1 -Port 8800   # use a different port
+.\tools\patch-feapp.ps1 -Restore     # restore the original in one step
+.\tools\verify-patches.ps1           # read-only check that every patch landed (all PASS or it is not in place)
 ```
 
-补丁是**盲替换**，改坏语法会让游戏黑屏且窗口无响应。所以脚本在写回之前会把改好的 bundle 交给
-`node --check` 解析一次，失败就中止 —— 此刻 `feapp.dat` 还停在从备份复制过来的原版状态，游戏照常能开。
+The patches are **blind replacements**; breaking the syntax leaves the game on a black screen with an unresponsive window. So before writing back, the script hands the modified bundle to
+`node --check` for one parse and aborts on failure — at that point `feapp.dat` is still the original copied over from the backup, and the game starts as usual.
 
-## 定制演奏（MIDI 上传 → 生成 → 播放）
+## Custom performances (MIDI upload → generate → playback)
 
-游戏原本要把 MIDI 上传到官方服务器换演奏，桥在本地实现了整条链路：
+The game originally uploaded MIDI to the official server to get a performance back; the bridge implements the whole chain locally:
 
 ```
-genObjectUploadUrl → PUT /toy/midi/upload/<key> → midi/generate → 轮询 getGenerateResult
+genObjectUploadUrl → PUT /toy/midi/upload/<key> → midi/generate → poll getGenerateResult
                                                                         ↓
-                                              WAV（试听） + MP4（演奏，需要 ffmpeg）
+                                              WAV (preview) + MP4 (performance, requires ffmpeg)
 ```
 
-- MIDI 解析与 WAV 合成是**纯 JS、零依赖**（移植自 [Comma0103/Linli-Nocturne](https://github.com/Comma0103/Linli-Nocturne) 的 `midi-manifest.js` / `audio-renderer.js`，MIT）。
-- 演奏侧的原生 WebPlayer 是 `<video>`，**播不了 WAV**，所以有 ffmpeg 时会再封一个音频-only MP4。
-  没装 ffmpeg 也能用：任务正常完成、试听照常，只是演奏不出声，日志里会写明。
-  ffmpeg 按 `配置 → OLIVIA_FFMPEG → <DSH_HOME>\olivia-bridge\ffmpeg\ → PATH` 的顺序发现，不硬编码任何路径。
-- 上传是 `PUT`，属于非简单请求，浏览器会先发 `OPTIONS` 预检。`Access-Control-Allow-Methods`
-  里少一个 `PUT`，请求就在离开浏览器之前被拒掉了 —— 而命令行 `curl` / `Invoke-WebRequest` **不走 CORS**，
-  会把这类问题完全掩盖。测试里专门留了一条预检断言盯住它。
-- 存储：`<DSH_HOME>\olivia-bridge\midi\`（`jobs.json` + `<key>.mid` + `<jobId>.wav|.mp4`）。
-- 歌单（「加播单」/「音乐桌面」）走本地 `<DSH_HOME>\olivia-bridge\playlist.json`。
-- 删除也是真删：「我的上传」里删歌走 `POST /toy/deleteUserSong`（`userSongId`），会连 WAV/MP4 一起清掉；
-  信件走 `POST /toy/letter/delete`（`letter_id`），连她的回信一起删、幂等（重复删返回 `deleted:false`）。
-  这两个端点以前落到 `lib/index.js` 末尾的兜底分支，返回 `code:0` + 空信封 ——
-  界面看着删掉了、刷新又回来，是典型的静默失败。另留了一个 `POST /toy/letter/clear` 清空全部往来（前端暂未接入）。
+- MIDI parsing and WAV synthesis are **pure JS, zero dependencies** (ported from `midi-manifest.js` / `audio-renderer.js` in [Comma0103/Linli-Nocturne](https://github.com/Comma0103/Linli-Nocturne), MIT).
+- The native WebPlayer on the performance side is a `<video>` and **cannot play WAV**, so when ffmpeg is present the audio is wrapped into an audio-only MP4.
+  It still works without ffmpeg installed: jobs complete normally and previews play as usual, only the performance makes no sound, and the log says so.
+  ffmpeg is discovered in the order `config → OLIVIA_FFMPEG → <DSH_HOME>\olivia-bridge\ffmpeg\ → PATH`, with no path hard-coded.
+- The upload is a `PUT`, which counts as a non-simple request, so the browser sends an `OPTIONS` preflight first. One missing `PUT` in
+  `Access-Control-Allow-Methods` and the request is rejected before it ever leaves the browser — while command-line `curl` / `Invoke-WebRequest` **does not go through CORS**
+  and hides this whole class of problem. The tests keep a dedicated preflight assertion watching for it.
+- Storage: `<DSH_HOME>\olivia-bridge\midi\` (`jobs.json` + `<key>.mid` + `<jobId>.wav|.mp4`).
+- Playlists ("add to playlist" / "music desktop") use the local `<DSH_HOME>\olivia-bridge\playlist.json`.
+- Deletion really deletes: removing a song from "my uploads" goes through `POST /toy/deleteUserSong` (`userSongId`) and clears the WAV/MP4 along with it;
+  a letter goes through `POST /toy/letter/delete` (`letter_id`), which deletes her reply as well and is idempotent (a repeat delete returns `deleted:false`).
+  Both endpoints used to fall through to the catch-all branch at the end of `lib/index.js`, returning `code:0` plus an empty envelope —
+  the UI looked like it deleted and the item came back on refresh, a textbook silent failure. There is also `POST /toy/letter/clear` to wipe all correspondence (not wired up in the frontend yet).
 
-## 配置
+## Configuration
 
-`cordis.patch.yml` 里 `olivia-bridge` 那一行的 `config`：
+The `config` on the `olivia-bridge` line in `cordis.patch.yml`:
 
-| 字段 | 默认 | 说明 |
+| Field | Default | Description |
 |---|---|---|
-| `port` | `8791` | 监听端口，改了要同步重打游戏补丁 |
-| `presetId` | `olivia` | 回信用的 agent preset（行 id 为 `preset-olivia`） |
-| `provider` / `model` | 空 | 留空则跟随 DSH 默认模型 |
-| `maxDailyLetters` | `1000000` | 每日寄信上限，客户端从 `list` 的 `remainingToday` 读 |
-| `llmFallback` | `true` | agent 路径跑不通时退回直接用 LLM 服务生成回信 |
-| `ffmpegPath` | 空 | 留空自动发现（见上）：`OLIVIA_FFMPEG` → `<DSH_HOME>\olivia-bridge\ffmpeg\ffmpeg.exe` → `PATH` |
+| `port` | `8791` | Listen port; changing it means re-patching the game too |
+| `presetId` | `olivia` | Agent preset used for replies (the line id is `preset-olivia`) |
+| `provider` / `model` | empty | Leave empty to follow the DSH default model |
+| `maxDailyLetters` | `1000000` | Daily letter cap; the client reads it from `remainingToday` in `list` |
+| `llmFallback` | `true` | Fall back to generating replies directly through the LLM service when the agent path does not work |
+| `ffmpegPath` | empty | Leave empty for auto-discovery (see above): `OLIVIA_FFMPEG` → `<DSH_HOME>\olivia-bridge\ffmpeg\ffmpeg.exe` → `PATH` |
 
-## 观测与排错
+## Observability and troubleshooting
 
 ```powershell
-# 桥的日志（每次请求、每封信的生成耗时都在这里）
+# bridge log (every request and the generation time of every letter lands here)
 $dsh = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
 Get-Content "$dsh\olivia-bridge\bridge.log" -Tail 40
 
-# 信件库
+# letter store
 Get-Content "$dsh\olivia-bridge\letters.json" -Raw
 
-# 手动确认服务活着
+# manually confirm the service is alive
 Invoke-RestMethod http://127.0.0.1:8791/toy/letter/unread_count
 
-# 静态诊断：preset 是否解析、会话建到哪一步、inbox / phase / 消息数
+# static diagnostics: whether the preset resolves, how far session creation got, inbox / phase / message count
 Invoke-RestMethod http://127.0.0.1:8791/olivia/diag
 
-# 让 agent 真跑一轮，回报前后快照（定位「会话建了但没人跑」）
+# run one real agent turn and report before/after snapshots (to pin down "the session was created but nothing ran")
 Invoke-RestMethod -Method Post http://127.0.0.1:8791/olivia/agent-test
 
-# 直接打一次 LLM，拿底层真实错误。默认按 agent 路线复现：tools / reasoningEffort /
-# maxTokens 取自会话最近一次请求头 —— 这三样正是 agent 路径与裸调用唯一的差别
-# （实测同一 provider/model 下裸调成功、agent 路径必失败）。返回里的 errorChain
-# 是沿 cause 展开的（≤6 层），TRANSPORT 那句的真因永远在第 2 层往后。
+# hit the LLM once directly and take the real underlying error. By default it reproduces the agent route: tools / reasoningEffort /
+# maxTokens come from the session's most recent request headers — these three are exactly what distinguishes the agent path from a bare call
+# (measured: under the same provider/model a bare call succeeds while the agent path always fails). The errorChain in the
+# response is expanded along cause (≤6 levels); the real reason behind the TRANSPORT line is always at level 2 or deeper.
 Invoke-RestMethod -Method Post http://127.0.0.1:8791/olivia/llm-test -ContentType 'application/json' -Body '{"text":"ping"}'
 
-# 对照 / 单变量：{"plain":true} 退回只发 provider/model；也可单独覆盖
-# {"plain":true,"reasoningEffort":"high"} 或直接给 {"tools":[],"maxTokens":4096}
+# control / single variable: {"plain":true} falls back to sending provider/model only; you can also override one thing,
+# e.g. {"plain":true,"reasoningEffort":"high"} or hand it {"tools":[],"maxTokens":4096}
 
-# 重投某封失败的信
+# re-submit one failed letter
 Invoke-RestMethod -Method Post http://127.0.0.1:8791/olivia/retry -Body '{"letterId":"3"}' -ContentType 'application/json'
 
-# 端到端：投一封信等回信
+# end to end: submit a letter and wait for the reply
 node tools\verify.mjs
 
-# 四组自测：契约层 / 响应形状 / MIDI 全链路 / profile YAML（各自用临时 DSH_HOME，不碰真实信件）
+# four self-test groups: contract layer / response shape / full MIDI chain / profile YAML (each uses a temporary DSH_HOME and never touches real letters)
 node test\contract.test.mjs
 node test\response-shape.test.mjs
 node test\midi-flow.test.mjs
 node test\validate-profile-yaml.mjs
 
-# 解压看她那个会话的事件（zstd JSONL）
+# unpack the events of her session (zstd JSONL)
 node tools\dump-session.mjs
 ```
 
-客户端每 60 秒轮询一次 `letter/list` + `unread_count`，所以回信生成完最多一分钟内在游戏里出现。
+The client polls `letter/list` + `unread_count` every 60 seconds, so a finished reply shows up in the game within a minute.
 
-### agent 路径的四个硬要求
+### Four hard requirements of the agent path
 
-这几条都是实测踩出来的，写在这里免得改代码时再踩（`dsh-agent` 的 README 示例有部分是过时的 v3 写法）：
+Every one of these was learned the hard way from real runs, and they are written down here so nobody steps on them again while changing the code (parts of the `dsh-agent` README examples are outdated v3 syntax):
 
-1. **消息必须带 `id`**。`UserMessage.id` 是 readonly 必需字段，官方 `createMessage` 用 `brandString(randomUUID())` 生成；缺了它 inbox 会**静默丢弃**。
-2. **`source.kind` 不能是笼统的 `"plugin"`**。v4 会话格式硬拒（`dsh-session-format-v3-to-v4` 的 `source()` 校验），合法形状是 `plugin:<插件名>`。
-3. **`agentOptions` 必须给 provider/model**。空着的话会话建得出来、`presetActive` 也是 true，但 turn 立刻空转、会话日志零事件。没配置时用 `ctx.agentDefaultModel.currentSelection()` 兜底。
-4. **`followup()` 之后不能立刻 `whenIdle()`**。它只负责排队 + 异步唤醒驱动器，紧接着调用会在 agent 还没醒时返回（实测 146~174ms）。要先轮询等 assistant 消息落地。
+1. **Messages must carry an `id`**. `UserMessage.id` is a readonly required field, generated by the official `createMessage` through `brandString(randomUUID())`; without it the inbox **silently drops** the message.
+2. **`source.kind` cannot be a bare `"plugin"`**. The v4 session format rejects it outright (the `source()` validation in `dsh-session-format-v3-to-v4`); the valid shape is `plugin:<plugin name>`.
+3. **`agentOptions` must give a provider/model**. Left empty, the session is created and `presetActive` is true as well, but the turn spins immediately and the session log holds zero events. When nothing is configured, fall back to `ctx.agentDefaultModel.currentSelection()`.
+4. **`followup()` must not be followed immediately by `whenIdle()`**. It only queues the work and asynchronously wakes the driver, so calling it right afterwards returns before the agent is awake (measured at 146-174 ms). Poll first and wait for the assistant message to land.
 
-另外两条：preset 按 **`config.id`** 索引（行 id 惯例是 `preset-<config.id>`）；sessionId 固定为 `olivia-letterbox` 并在启动时 `agents.resume()`，否则每次重启 DSH 她都会失忆。
+Two more: presets are indexed by **`config.id`** (the line id convention is `preset-<config.id>`); the sessionId is fixed to `olivia-letterbox` with `agents.resume()` on startup, otherwise she loses her memory every time DSH restarts.
 
-## 已知边界
+## Known limits
 
-- 客户端与后端的契约来自对 0.0.9.627 前端包（`assets/main-*.js`）的逆向，以及社区实现的交叉验证。没实现的端点走 `lib/index.js` 末尾的兜底分支，返回**字段完备的空信封** —— 不是 `{}`：前端有 33 个调用点会直接对 `data` 里的数组调方法，缺字段就抛 TypeError、Promise 被拒、骨架屏永远转圈。
-- 只实现文字回信。视频/语音回信需要客户端从 `detail.replyVideoUrl` 拿绝对 URL，并以带音轨 MP4 下发，当前没有做。
-- **官方离线曲库（「自带曲目」）出不来**：它不走 HTTP，而是走原生桥 `getOfflineSongList`，该 action 在停服后的客户端上压根不回应；`songlist.dat` 又是密文，曲目媒体文件本地也没有。想听曲子只能自己上传 MIDI。
-- MIDI 分享码是官方服务端能力，本地不伪造成功（返回 409）。
-- 插件只监听 `127.0.0.1`，不对外网开放；服务端不校验 token，任何本机进程都能读写这些信件。
-- 只动前端包，不碰任何原生 DLL。
+- The client-server contract comes from reverse-engineering the 0.0.9.627 frontend bundle (`assets/main-*.js`) plus cross-checking against community implementations. Endpoints that are not implemented fall through to the catch-all branch at the end of `lib/index.js`, which returns a **fully-populated empty envelope** — not `{}`: 33 call sites in the frontend call array methods directly on fields of `data`, and a missing field throws a TypeError, rejects the promise, and leaves the skeleton screen spinning forever.
+- Only text replies are implemented. Video/voice replies would need the client to take an absolute URL from `detail.replyVideoUrl` and the server to deliver an MP4 with an audio track, which is not done.
+- **The official offline song library ("built-in tracks") does not work**: it does not go over HTTP but through the native bridge action `getOfflineSongList`, and that action does not respond at all on the post-shutdown client; `songlist.dat` is encrypted and the track media files are not present locally either. The only way to hear songs is to upload your own MIDI.
+- MIDI share codes are an official server-side capability, and the bridge does not fake success locally (it returns 409).
+- The plugin only listens on `127.0.0.1` and is not exposed to the network; the server validates no token, so any process on this machine can read and write these letters.
+- Only the frontend bundle is touched; no native DLL is modified.
 
-## 卸载
+## Uninstalling
 
 ```powershell
-.\tools\install-desktop.ps1 -Uninstall   # 摘掉 junction
-.\tools\patch-feapp.ps1 -Restore         # 还原游戏文件
-# 再按 <DSH_HOME>\profiles\desktop\*.bak-olivia-<时间戳> 恢复 profile 的
-# package.json / cordis.patch.yml，重启 DSH
+.\tools\install-desktop.ps1 -Uninstall   # remove the junction
+.\tools\patch-feapp.ps1 -Restore         # restore the game files
+# then restore the profile's package.json / cordis.patch.yml
+# from <DSH_HOME>\profiles\desktop\*.bak-olivia-<timestamp>, and restart DSH
 ```
 
-## 参考
+## References
 
-同一件事的社区实现，可交叉验证补丁点：
+Community implementations of the same thing, useful for cross-checking patch sites:
 
-- [Comma0103/Linli-Nocturne](https://github.com/Comma0103/Linli-Nocturne) —— 补丁表最完整，前端与原生 DLL 都覆盖
-- [AETAVK/linli-local-mail](https://github.com/AETAVK/linli-local-mail) —— 本地信件服务
-- [2962152120/oliviaproxy](https://github.com/2962152120/oliviaproxy) —— 代理式实现
+- [Comma0103/Linli-Nocturne](https://github.com/Comma0103/Linli-Nocturne) — the most complete patch table, covering both the frontend and the native DLL
+- [AETAVK/linli-local-mail](https://github.com/AETAVK/linli-local-mail) — a local letter service
+- [2962152120/oliviaproxy](https://github.com/2962152120/oliviaproxy) — a proxy-style implementation
 
-## 许可
+## License
 
 MIT

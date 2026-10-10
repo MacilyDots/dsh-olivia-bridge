@@ -1,5 +1,7 @@
 # dsh-olivia-bridge
 
+[![DSH Market](https://raw.githubusercontent.com/2BingLing/dsh-market/master/assets/readme/badge-listed-zh.svg)](https://dsh.market/)
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 把《BSide: Olivia Lin》（米哈游「林离」）的客户端接到 DSH 上——游戏里写的信，由 DSH 的一个 agent 会话来回。

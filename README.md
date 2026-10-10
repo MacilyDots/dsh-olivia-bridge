@@ -1,5 +1,7 @@
 # dsh-olivia-bridge
 
+[![DSH Market](https://raw.githubusercontent.com/2BingLing/dsh-market/master/assets/readme/badge-listed-en.svg)](https://dsh.market/)
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 Wire the *BSide: Olivia Lin* client (miHoYo's 林离) into DSH — letters written in the game are answered by a DSH agent session.

@@ -1,6 +1,6 @@
 {
   "name": "dsh-olivia-bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "BSide: Olivia Lin bridge — serves the game client's /toy/letter/* contract locally and answers each letter through a DSH agent session.",
   "type": "module",
   "main": "./lib/index.js",
@@ -12,7 +12,17 @@
     "lib",
     "cordis.patch.yml",
     "README.md",
-    "README.zh-CN.md"
+    "README.zh-CN.md",
+    "tools/install-desktop.ps1",
+    "tools/patch-feapp.ps1",
+    "tools/verify-patches.ps1",
+    "tools/preset-persona.txt",
+    "tools/inject.js",
+    "tools/diagnose.mjs",
+    "tools/decode-probes.mjs",
+    "tools/dump-session.mjs",
+    "tools/dump-session-full.mjs",
+    "tools/verify.mjs"
   ],
   "keywords": [
     "dsh-plugin",
@@ -21,7 +31,7 @@
     "bside"
   ],
   "license": "MIT",
-  "author": "MacilyDots",
+  "author": "MacilyDots <maicly@foxmail.com>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MacilyDots/dsh-olivia-bridge.git"

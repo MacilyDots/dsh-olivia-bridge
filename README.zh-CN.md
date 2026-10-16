@@ -29,7 +29,13 @@ DSH agent 会话（preset: 林离）
 
 需要 DSH 桌面端 0.2.x（Windows）与 `0.0.9.627` 版游戏客户端。
 
-安装是**多步骤**的：挂载插件只是其中一步，此外还要给游戏前端打补丁、往 profile 追加人格预设。所以下面的脚本必须跑——`dsh plugin --profile <profile> add dsh-olivia-bridge` 只是把同一份代码从 npm 拿下来（脚本就在包里 `node_modules\dsh-olivia-bridge\tools\`），**单独一条命令装不完整**。
+从 npm 拿代码：
+
+```sh
+dsh plugin --profile <profile> add dsh-olivia-bridge
+```
+
+但安装是**多步骤**的——这一条只把代码放进 profile，**装不完整**：还要给游戏前端打补丁、往 profile 追加人格预设，下面那些脚本仍然必须跑（它们就在包里 `node_modules\dsh-olivia-bridge\tools\`）。
 
 ```powershell
 # 1. 把插件挂进 desktop profile（改动前自动备份成 *.bak-olivia-<时间戳>）

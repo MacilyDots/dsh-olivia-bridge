@@ -29,7 +29,13 @@ The session id is fixed to `olivia-letterbox`, and the plugin calls `agents.resu
 
 Requires DSH desktop 0.2.x (Windows) and game client `0.0.9.627`.
 
-Installation is **multi-step**: mounting the plugin is only part of it — the game's frontend also needs patching and the profile needs a persona preset appended. So the scripts below have to be run; `dsh plugin --profile <profile> add dsh-olivia-bridge` only fetches the same code from npm (the scripts ship inside the package at `node_modules\dsh-olivia-bridge\tools\`) and is **not sufficient on its own**.
+Fetch the code from npm:
+
+```sh
+dsh plugin --profile <profile> add dsh-olivia-bridge
+```
+
+But installation is **multi-step** — that only puts the code into the profile and is **not sufficient on its own**: the game's frontend still needs patching and the profile needs a persona preset appended, so the scripts below have to be run (they ship inside the package at `node_modules\dsh-olivia-bridge\tools\`).
 
 ```powershell
 # 1. Mount the plugin into the desktop profile (existing files are backed up to *.bak-olivia-<timestamp> first)
